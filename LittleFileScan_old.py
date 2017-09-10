@@ -17,7 +17,9 @@ import re
 import Queue
 import threading
 import argparse
+import multiprocessing
 from libs.GenerateDict import ProcessDic
+from libs.common import get_time, decode_response_text
 
 class myFileScan:
     def __init__(self, url, custom_extion="php",full_scan=False, verbose=True):
@@ -32,20 +34,16 @@ class myFileScan:
         self.verbose = verbose
         self.custom_extion = custom_extion
 
-
+        # 
+        self.START_TIME = time.time()
 
         #erro flag()()
-        # error flag pattern compile
-        # print page_not_found_reg
         self.error_pattern = re.compile(page_not_found_reg)
 
         self.has_404 = True
         self.error_status_code = 404
-        self.error_flag = False
         self.error_content_length = 0
-        self.dir_in_content = False
         self.error_location = ""
-        self.check_404()
 
 
         # available dirs
@@ -55,6 +53,10 @@ class myFileScan:
         self.available_file = []
 
         self.generateFileAndDir()
+
+        self.checkUrl()
+        self.check_404(types="file")
+        self.checkFile()
 
 
 
@@ -87,34 +89,33 @@ class myFileScan:
         # default generate 188 dirs and 868 files(bak & tmp)
         # so next, we fuzz dirs, and add possible dirs, then we generate dirs and files
 
-    def check_404(self):
+    def check_404(self, types="dir"):
         error_dir = "this_is_error_dirs_test/"
         error_files = "this_is_error_files_test/hello.html"
 
 
         # Stitching url
-        _ = self.url + "/" + error_files
+        if types == "dir":
+            _ = self.url + "/" + error_dir
+        elif types == "file":
+            _ = self.url + "/" + error_files
+        else:
+            raise Exception("[-] [Error] [check_404] types not Identify")
         try:
-            resp = requests.get(_, headers=headers, timeout=timeout, allow_redirects=False, verify=allow_ssl_verify)
-            _content = resp.content.decode("utf-8", "ignore")
-            _content = _content.replace("\r\n", "").replace(" ", "")
-            print _content
-            print resp
+            resp = requests.get(_, headers=headers, timeout=timeout, allow_redirects=True, verify=allow_ssl_verify)
+            _content = decode_response_text(resp.content)
+            #_content = _content.replace("\r\n", "").replace(" ", "")
 
             self.error_status_code = resp.status_code
 
             # if 302 or 301, get Location
-            if resp.status_code in [301, 302] and "Location" in resp.headers:
-                self.error_location = resp.headers["Location"]
-
-            if self.error_pattern.match(_content):
-                self.error_flag = True
-
-            if error_dir in _content:
-                self.dir_in_content = True
-                self.error_content_length = len(_content) - len(_content)
+            if resp.url != _:
+                self.error_location = resp.url
             else:
-                self.error_content_length = len(_content)
+                self.error_location = ""
+            # if resp.status_code in [301, 302] and "Location" in resp.headers:
+            #     self.error_location = resp.headers["Location"]
+            self.error_content_length = len(_content)
         except Exception as e:
             self.has_404 = False
             print "[-] [Error] [myFileScan] [check_404] Request Error " + str(e)
@@ -151,60 +152,53 @@ class myFileScan:
                     return False
 
             else:
-                resp = requests.get(_url, headers=headers, timeout=timeout, allow_redirects=False, verify=allow_ssl_verify)
-                _content = resp.content.decode("utf-8", "ignore")
-                _content = _content.replace("\r\n", "").replace(" ", "")
+                resp = requests.get(_url, headers=headers, timeout=timeout, allow_redirects=True, verify=allow_ssl_verify)
+                _content = decode_response_text(resp.content)
                 # 判断是否在400, 404, 501, 502, 503, 505,如果是直接返回False
                 if self.verbose:
                     print "[+] [Info] [myFileScan] [verifyAlive] verify: {:25} status_code: {}".format(_url, resp.status_code)
-                if resp.status_code in [400, 403, 404, 405, 500, 501, 502, 503, 505]:
+                if resp.status_code in [400, 403, 404, 414, 405, 500, 501, 502, 503, 505]:
                     return False
 
                 if resp.status_code in [301, 302]:
                     if "Location" in resp.headers:
                         if resp.headers["Location"] == self.error_location:
                             return False
+                
+                # 直接匹配错误标识
+                if self.error_pattern.findall(_content):
+                    return False
                 # 如果有404错误页面的响应
                 if self.has_404:
                     # 如果返回码不是404, 但是判断是否是与error_status_code
                     if resp.status_code == self.error_status_code:
                         # 判断是否有404标志
                         if self.error_flag:
-                            if self.error_pattern.match(_content):
+                            if self.error_pattern.findall(_content):
                                 return False
                             else:
                                 return True
                         # 如果没有404标志,那么对比长度
                         else:
-                            if self.dir_in_content:
-                                l_content = len(_content) - len(dirs)
-                                if abs(l_content - self.error_content_length) < 10:
-                                    return False
-                                else:
-                                    return True
+                            mins = min(self.error_content_length, len(_content))
+                            if mins == 0:
+                                mins = 10.0
+                            if abs(float(self.error_content_length, len(_content))) / mins > 0.3:
+                                return True
                             else:
-                                if abs(len(_content) - self.error_content_length) < 10:
-                                    return False
-                                else:
-                                    return True
+                                return False 
 
                     # 如果不在上边，且不和error_code相等，那么先认为为True
                     else:
-                        return True
+                        return False
                 else:
                     # 如果check_404请求失败，怎么办呢？, 先return True
-                    return True
+                    return False
 
         except Exception as e:
             # 如果出错了，认为是True, 即404
             print "[-] [Error] [myFileScan] [verifyAlive] " + str(e)
-            return True
-
-        # 这样判断，首先判断是否是404,如果是，那么404标志设置为true
-        #
-        # 如果不是404, 判断是否有flag值匹配，如果匹配，那么has_flag = True
-        #             并判断是否为302, 是302的话，标记302的 location
-        # 如果无匹配，那么看错误长度 error_length, 错误长度在一定的相差范围内，则认为是不存在的
+            return False
 
 
 
@@ -230,9 +224,22 @@ class myFileScan:
         self.url = self.url.rstrip("/")
 
 
+    def get_title(self, html):
+        title = re.match(r"<title>(.*)</title>", html)
+        if title:
+            title = title.group(1)
+        else:
+            title = re.findall(r"<title>(.*)</title>", html)
+            if title:
+                title = title[0]
+            else:
+                title = ""
+
+        return title
 
     # 先写一块吧，回头再拆开
     def checkUrl(self):
+        self.check_404(types="dir")
         for webdir in self.fuzz_webdirs:
             if self.verifyAlive(webdir):
                 self.available_dirs.append(webdir)
@@ -244,6 +251,8 @@ class myFileScan:
 
 
     def checkFile(self):
+        if not self.available_dirs:
+            self.available_dirs.append("/")
         for webdir in self.available_dirs:
             if not webdir.endswith("/"):
                 webdir += "/"
@@ -275,6 +284,10 @@ class myFileScan:
 
     def runFuzz(self):
         while (not self.file_queue.empty()) and self.STOP_ME == False:
+            if time.time() - self.START_TIME > (TIMEOUT * 60):
+                self.file_queue.queue.clear()
+                break
+
             _ = self.file_queue.get()
             result = self.verifyAlive(_[0], types="file", compress=_[1])
             if result:
@@ -289,6 +302,7 @@ def parseArgs():
     parser.add_argument("--host", help="the target host, MUST HAVE")
     parser.add_argument("--ext", help="the extend name, default php", default="php")
     parser.add_argument("-v", help="show more detail when running", action="store_true")
+    parser.add_argument("-f", help="file contains ip:port or subDomais each line")
     parser.add_argument("--full", help="Use All Dict (May be more False positives and take more time)", action="store_true")
     parser.add_argument("-t", "--threadnum", help="the number of thread count, default 15", default=15)
     args = parser.parse_args()
@@ -300,27 +314,42 @@ def parseArgs():
 
 
 
+def batchFileScan(args):
+    custom_extion = args.ext
+    verbose = args.v
+    full_scan = args.full
+    pool = multiprocessing.Pool(process=4)
+
+
+
 
 
 
 def ScanApi(host, custom_extion="php", verbose=True, full_scan=False):
-    a = myFileScan(args.host, custom_extion=custom_extion, verbose=verbose, full_scan=full_scan)
-    a.checkUrl()
-    a.checkFile()
+
+    a = myFileScan(host, custom_extion=custom_extion, verbose=verbose, full_scan=full_scan)
+
+    threads = []
     for i in range(int(args.threadnum)):
         thd = threading.Thread(target=a.runFuzz)
+        threads.append(thd)
         thd.setDaemon(True)
         thd.start()
     
     while True:
-        if threading.activeCount() <= 1:
+        count = 0
+        for thd in threads:
+            if thd.is_alive():
+                count += 1
+        if count == 0:
             break
         else:
             try:
                 time.sleep(1)
             except KeyboardInterrupt as e:
-                print '\n[WARNING] User aborted, wait all slave threads to exit, current(%i)' % threading.activeCount()
+                print '\n[WARNING] User aborted, wait all slave threads to exit, current(%i)' % count
                 a.STOP_ME = True
+                break
 
 
 if __name__ == '__main__':
@@ -358,6 +387,7 @@ if __name__ == '__main__':
         custom_extion = args.ext
     if args.v:
         verbose = True
-    ScanApi(args.host, custom_extion=custom_extion, verbose=verbose, full_scan=full_scan)
+    if args.f:
+        with open()
 
 
