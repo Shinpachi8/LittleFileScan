@@ -113,6 +113,11 @@ class myFileScan:
                 self.error_location = resp.url
             else:
                 self.error_location = ""
+            # 判断是否有404标志
+            if self.error_pattern.findall(_content):
+                self.error_flag = True
+            else:
+                self.error_flag = False
             # if resp.status_code in [301, 302] and "Location" in resp.headers:
             #     self.error_location = resp.headers["Location"]
             self.error_content_length = len(_content)
@@ -166,27 +171,24 @@ class myFileScan:
                             return False
                 
                 # 直接匹配错误标识
-                if self.error_pattern.findall(_content):
-                    return False
+                if self.error_flag:
+                    if self.error_pattern.findall(_content):
+                        return False
+                    else:
+                        return True
+
+                
                 # 如果有404错误页面的响应
                 if self.has_404:
                     # 如果返回码不是404, 但是判断是否是与error_status_code
                     if resp.status_code == self.error_status_code:
-                        # 判断是否有404标志
-                        if self.error_flag:
-                            if self.error_pattern.findall(_content):
-                                return False
-                            else:
-                                return True
-                        # 如果没有404标志,那么对比长度
+                        mins = min(self.error_content_length, len(_content))
+                        if mins == 0:
+                            mins = 10.0
+                        if abs(float(self.error_content_length, len(_content))) / mins > 0.3:
+                            return True
                         else:
-                            mins = min(self.error_content_length, len(_content))
-                            if mins == 0:
-                                mins = 10.0
-                            if abs(float(self.error_content_length, len(_content))) / mins > 0.3:
-                                return True
-                            else:
-                                return False 
+                            return False 
 
                     # 如果不在上边，且不和error_code相等，那么先认为为True
                     else:
